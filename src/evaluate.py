@@ -159,6 +159,11 @@ def ensure_lpips_weights() -> None:
     One-time setup from the login node:
         python -c "from src.evaluate import ensure_lpips_weights; ensure_lpips_weights()"
     """
+    checkpoint = (
+        _TORCH_HUB_CACHE_DIR / "hub" / "checkpoints" / "alexnet-owt-7be5be79.pth"
+    )
+    if checkpoint.exists():
+        return
     os.environ.setdefault("TORCH_HOME", str(_TORCH_HUB_CACHE_DIR))
     _TORCH_HUB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     # triggers the torch.hub download of AlexNet weights + lpips' own linear
@@ -512,12 +517,14 @@ def lpips_diversity(fake_dir: Path, n_pairs: int = 200, device: str = "cuda") ->
     dists = []
     with torch.no_grad():
         for i, j in pairs:
-            img_i = tfm(Image.open(paths[i]).convert("RGB")).unsqueeze(0).to(device)
-            img_j = tfm(Image.open(paths[j]).convert("RGB")).unsqueeze(0).to(device)
+            with Image.open(paths[i]) as img:
+                img_i = tfm(img.convert("RGB")).unsqueeze(0).to(device)
+            with Image.open(paths[j]) as img:
+                img_j = tfm(img.convert("RGB")).unsqueeze(0).to(device)
             dists.append(loss_fn(img_i, img_j).item())
     return float(np.mean(dists))
 
-def _get_lpips_model(device: str):
+def _get_lpips_model(device: str) -> lpips.LPIPS:
     if device not in _LPIPS_MODEL_CACHE:
         ensure_lpips_weights()
         _LPIPS_MODEL_CACHE[device] = lpips.LPIPS(net="alex").to(device)
