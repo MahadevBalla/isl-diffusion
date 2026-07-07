@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# IDE specific files
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+.venv
+.python-version
+
+# Dataset
+data/*
+!data/.gitkeep
+
+# Experiment artifacts
+experiments/*
+!experiments/.gitkeep
