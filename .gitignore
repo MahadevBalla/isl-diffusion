@@ -25,3 +25,4 @@ data/*
 # Experiment artifacts
 experiments/*
 !experiments/.gitkeep
+logs/*

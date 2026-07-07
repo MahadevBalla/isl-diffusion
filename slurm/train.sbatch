@@ -39,7 +39,7 @@ set -euo pipefail
 EXPERIMENTS=(baseline_uncond main_conditional schedule_linear legacy_gray64_uncond)
 EXP_NAME="${EXPERIMENTS[$SLURM_ARRAY_TASK_ID]}"
 
-PROJECT_DIR="/home/mahadevballa23/scratch_space/isl-diffusion/code"
+PROJECT_DIR="/home/mahadevballa23/scratch_space/isl-diffusion"
 VENV_DIR="$PROJECT_DIR/.venv"
 DATA_ROOT="$PROJECT_DIR/data"
 OUTPUT_DIR="$PROJECT_DIR/experiments/${EXP_NAME}"
