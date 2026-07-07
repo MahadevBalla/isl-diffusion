@@ -497,6 +497,10 @@ def precision_recall(
     }  # precision, recall, density, coverage
 
 
+def normalize_to_minus_one_one(x: torch.Tensor) -> torch.Tensor:
+    return x * 2 - 1
+
+
 def lpips_diversity(fake_dir: Path, n_pairs: int = 200, device: str = "cuda") -> float:
     """
     Mean pairwise LPIPS distance among generated images for one class/run.
@@ -506,7 +510,7 @@ def lpips_diversity(fake_dir: Path, n_pairs: int = 200, device: str = "cuda") ->
     """
     loss_fn = _get_lpips_model(device)
     paths = sorted(Path(fake_dir).glob("*.png"))
-    tfm = TV.Compose([TV.ToTensor(), TV.Lambda(lambda x: x * 2 - 1)])
+    tfm = TV.Compose([TV.ToTensor(), TV.Lambda(normalize_to_minus_one_one)])
     # deterministic pairing for reproducible diversity metric, not security-sensitive
     rng = random.Random(0)
     pairs = [

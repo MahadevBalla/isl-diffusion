@@ -21,6 +21,7 @@ import random
 from pathlib import Path
 from typing import List, Tuple
 
+import torch
 import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
@@ -28,6 +29,10 @@ from torch.utils.data import Dataset
 from .config import ExperimentConfig
 
 IMG_EXTENSIONS = (".png", ".jpg", ".jpeg")
+
+
+def normalize_to_minus_one_one(x: torch.Tensor) -> torch.Tensor:
+    return x * 2 - 1
 
 
 def list_classes(data_root: str) -> List[str]:
@@ -73,7 +78,8 @@ class ISLDataset(Dataset):
                     f"Class '{cls}' has only {len(imgs)} images, "
                     f"need {cfg.samples_per_class}"
                 )
-            selected = rng.sample(imgs, cfg.samples_per_class)
+            # deterministic seeding required for reproducibility, not security-sensitive
+            selected = rng.sample(imgs, cfg.samples_per_class)  # NOSONAR
             self.paths.extend(selected)
             self.labels.extend([self.class_to_idx[cls]] * len(selected))
 
@@ -81,7 +87,7 @@ class ISLDataset(Dataset):
         self.transform = T.Compose(
             [T.Resize((cfg.image_size, cfg.image_size))]
             + aug
-            + [T.ToTensor(), T.Lambda(lambda x: x * 2 - 1)]  # normalize to [-1, 1]
+            + [T.ToTensor(), T.Lambda(normalize_to_minus_one_one)]  # normalize to [-1, 1]
         )
 
     def __len__(self) -> int:
