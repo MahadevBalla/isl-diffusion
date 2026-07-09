@@ -57,7 +57,7 @@ class ExperimentConfig:
     train_batch_size: int = 64
     eval_batch_size: int = 64
     # fixed step budget instead of epoch-based early stopping (see module docstring)
-    max_train_steps: int = 120_000
+    max_train_steps: int = 65_000
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2
     lr_warmup_steps: int = 1000
@@ -68,8 +68,8 @@ class ExperimentConfig:
 
     # checkpointing / resume
     # Checkpoint and sample generation intervals.
-    checkpoint_every_steps: int = 5000
-    sample_every_steps: int = 10000
+    checkpoint_every_steps: int = 5_000
+    sample_every_steps: int = 5_000
     resume_from_checkpoint: bool = True
 
     # inference (routine sampling during training)
@@ -147,6 +147,6 @@ EXPERIMENTS = {
         block_out_channels=(128, 128, 256, 256),
         attn_stages_from_end=2,
         train_batch_size=128,
-        max_train_steps=90_000,
+        max_train_steps=65_000,
     ),
 }
