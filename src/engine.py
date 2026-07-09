@@ -36,6 +36,11 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def _checkpoint_step(path: Path) -> int:
+    """Extracts the training step from a checkpoint directory name."""
+    return int(path.name.split("_")[1])
+
+
 def _find_latest_checkpoint(cfg: ExperimentConfig) -> Path | None:
     """Returns the most recent checkpoint, if available."""
     ckpt_root = Path(cfg.checkpoint_dir)
@@ -43,7 +48,7 @@ def _find_latest_checkpoint(cfg: ExperimentConfig) -> Path | None:
         return None
     steps = sorted(
         (p for p in ckpt_root.iterdir() if p.is_dir() and p.name.startswith("step_")),
-        key=lambda p: int(p.name.split("_")[1]),
+        key=_checkpoint_step,
     )
     return steps[-1] if steps else None
 

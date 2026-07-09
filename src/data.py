@@ -44,6 +44,23 @@ def resize_aspect_preserving(
     return TF.resize(img, short_side, antialias=True)
 
 
+class ResizeAspectPreserving:
+    """Resize the shorter side while preserving aspect ratio."""
+
+    def __init__(self, target_size: int, margin_factor: float):
+        self.target_size = target_size
+        self.margin_factor = margin_factor
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        return resize_aspect_preserving(img, self.target_size, self.margin_factor)
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(target_size={self.target_size}, "
+            f"margin_factor={self.margin_factor})"
+        )
+
+
 def _augmentation_transforms() -> list:
     """
     Returns the training augmentation pipeline.
@@ -60,16 +77,14 @@ def build_transform(cfg: ExperimentConfig, train: bool) -> T.Compose:
     """Builds the preprocessing pipeline."""
     use_aug = train and cfg.use_augmentation
     transforms: list = [
-        T.Lambda(
-            lambda img: resize_aspect_preserving(
-                img, cfg.image_size, cfg.resize_margin_factor if use_aug else 1.0
-            )
+        ResizeAspectPreserving(
+            cfg.image_size, cfg.resize_margin_factor if use_aug else 1.0
         ),
         T.CenterCrop(cfg.image_size),
     ]
     if use_aug:
         transforms.extend(_augmentation_transforms())
-    transforms += [T.ToTensor(), T.Lambda(normalize_to_minus_one_one)]
+    transforms += [T.ToTensor(), normalize_to_minus_one_one]
     return T.Compose(transforms)
 
 

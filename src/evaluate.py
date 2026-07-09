@@ -34,6 +34,7 @@ from tqdm import tqdm
 from .config import ExperimentConfig
 from .data import (
     ISLDataset,
+    ResizeAspectPreserving,
     list_classes,
     normalize_to_minus_one_one,
     resize_aspect_preserving,
@@ -250,7 +251,7 @@ def lpips_diversity(fake_dir: Path, device, n_pairs: int = 200) -> float:
     """Computes mean pairwise LPIPS distance between generated images."""
     loss_fn = _get_lpips_model(device)
     paths = sorted(Path(fake_dir).glob("*.png"))
-    transform = TV.Compose([TV.ToTensor(), TV.Lambda(normalize_to_minus_one_one)])
+    transform = TV.Compose([TV.ToTensor(), normalize_to_minus_one_one])
     rng = random.Random(0)
     max_pairs = len(paths) * (len(paths) - 1) // 2
     pairs = [
@@ -406,11 +407,7 @@ def train_semantic_classifier(cfg: ExperimentConfig, device, epochs: int = 8) ->
     classes = list_classes(cfg.data_root)
     transform = TV.Compose(
         [
-            TV.Lambda(
-                lambda img: resize_aspect_preserving(
-                    img, cfg.image_size, margin_factor=1.0
-                )
-            ),
+            ResizeAspectPreserving(cfg.image_size, margin_factor=1.0),
             TV.CenterCrop(cfg.image_size),
             TV.ToTensor(),
             TV.Normalize(mean=[0.5] * 3, std=[0.5] * 3),
