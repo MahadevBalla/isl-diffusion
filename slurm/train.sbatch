@@ -7,7 +7,7 @@
 #SBATCH --time=36:00:00
 #SBATCH --output=logs/train_%a_%j.out
 #SBATCH --error=logs/train_%a_%j.err
-#SBATCH --array=0-3
+#SBATCH --array=0-2
 
 set -euo pipefail
 
@@ -18,7 +18,6 @@ set -euo pipefail
 #   0 → baseline_uncond
 #   1 → main_conditional
 #   2 → schedule_linear
-#   3 → legacy_gray64_uncond
 #
 # Each task auto-resumes from its own <output_dir>/checkpoints/step_* if
 # present, so this script is safe to resubmit (e.g. after a walltime kill)
@@ -36,7 +35,7 @@ set -euo pipefail
 #   sbatch --array=1 slurm/train.sbatch
 # ─────────────────────────────────────────────────────────────────────────────
 
-EXPERIMENTS=(baseline_uncond main_conditional schedule_linear legacy_gray64_uncond)
+EXPERIMENTS=(baseline_uncond main_conditional schedule_linear)
 EXP_NAME="${EXPERIMENTS[$SLURM_ARRAY_TASK_ID]}"
 
 PROJECT_DIR="/home/mahadevballa23/scratch_space/isl-diffusion"

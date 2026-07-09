@@ -1,22 +1,8 @@
 """
-Manual sampling loop.
-
-diffusers' built-in DDPMPipeline/DDIMPipeline don't support classifier-free
-guidance out of the box for a plain UNet2DModel, so this implements the CFG
-denoising loop directly:
-
-    eps_uncond = model(x_t, t, class_labels=NULL)
-    eps_cond   = model(x_t, t, class_labels=y)
-    eps        = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
-
-guidance_scale=1.0 recovers plain conditional sampling (no CFG push);
-guidance_scale=0.0 would be pure unconditional. Unconditional models simply
-skip class_labels entirely and guidance_scale is ignored.
+Sampling utilities for diffusion models.
 """
 
 from __future__ import annotations
-
-from typing import List, Optional
 
 import torch
 from PIL import Image
@@ -26,7 +12,7 @@ from .model import build_inference_scheduler
 
 
 def _to_pil(tensor: torch.Tensor) -> Image.Image:
-    # tensor in [-1, 1], shape (C, H, W)
+    """Converts a normalized tensor to a PIL image."""
     img = (tensor / 2 + 0.5).clamp(0, 1)
     img = (img.cpu().permute(1, 2, 0).numpy() * 255).round().astype("uint8")
     if img.shape[-1] == 1:
@@ -42,14 +28,15 @@ def sample_images(
     cfg: ExperimentConfig,
     num_images: int,
     device,
-    class_labels: Optional[torch.Tensor] = None,
+    class_labels: torch.Tensor | None = None,
     guidance_scale: float = 1.0,
-    sampler: Optional[str] = None,
-    num_inference_steps: Optional[int] = None,
+    sampler: str | None = None,
+    num_inference_steps: int | None = None,
     seed: int = 42,
     return_intermediates: bool = False,
     intermediate_every: int = 10,
-) -> List[Image.Image] | tuple[List[Image.Image], list]:
+) -> list[Image.Image] | tuple[list[Image.Image], list]:
+    """Generates images using the configured inference scheduler."""
     sampler = sampler or cfg.sampler
     num_inference_steps = num_inference_steps or cfg.num_inference_steps
     scheduler = build_inference_scheduler(sampler, train_scheduler_config)
@@ -62,7 +49,11 @@ def sample_images(
         device=device,
     )
 
-    use_cfg = cfg.conditional and class_labels is not None and guidance_scale != 1.0  # NOSONAR
+    use_cfg = (
+        cfg.conditional
+        and class_labels is not None
+        and guidance_scale != 1.0  # NOSONAR
+    )
     null_labels = None
     if use_cfg:
         null_labels = torch.full_like(class_labels, cfg.null_class_idx)
@@ -102,7 +93,8 @@ def sample_images(
     return images
 
 
-def make_grid_image(images: List[Image.Image], rows: int, cols: int) -> Image.Image:
+def make_grid_image(images: list[Image.Image], rows: int, cols: int) -> Image.Image:
+    """Creates a grid from a list of images."""
     w, h = images[0].size
     mode = images[0].mode
     grid = Image.new(

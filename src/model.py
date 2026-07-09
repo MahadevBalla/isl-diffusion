@@ -1,16 +1,5 @@
 """
-Model and scheduler construction.
-
-Class conditioning uses UNet2DModel(num_class_embeds=...), NOT
-UNet2DConditionModel. The latter is built for cross-attention over sequence
-embeddings (text/CLIP-style conditioning a la Stable Diffusion) which is the
-wrong tool for a fixed set of 35 discrete labels -- num_class_embeds adds a
-learned embedding table added to the timestep embedding internally, which is
-exactly what's needed here and is far simpler to train and maintain.
-
-CFG requires one reserved "null" class index (cfg.null_class_idx == num_classes)
-that the model must also learn to condition on -- see engine.py for the label
-dropout during training.
+Model and scheduler construction utilities.
 """
 
 from __future__ import annotations
@@ -21,14 +10,15 @@ from diffusers import (
     DDIMScheduler,
     DDPMScheduler,
     DPMSolverMultistepScheduler,
-    UniPCMultistepScheduler,
     UNet2DModel,
+    UniPCMultistepScheduler,
 )
 
 from .config import NOISE_SCHEDULE_TO_BETA, ExperimentConfig
 
 
 def build_model(cfg: ExperimentConfig) -> UNet2DModel:
+    """Builds the diffusion UNet."""
     n_blocks = len(cfg.block_out_channels)
     attn_from = n_blocks - cfg.attn_stages_from_end
     down_block_types = tuple(
@@ -56,6 +46,7 @@ def build_model(cfg: ExperimentConfig) -> UNet2DModel:
 
 
 def build_train_scheduler(cfg: ExperimentConfig) -> DDPMScheduler:
+    """Builds the training noise scheduler."""
     beta_schedule = NOISE_SCHEDULE_TO_BETA[cfg.noise_schedule]
     kwargs: dict[str, Any] = {
         "num_train_timesteps": cfg.num_train_timesteps,
@@ -67,6 +58,7 @@ def build_train_scheduler(cfg: ExperimentConfig) -> DDPMScheduler:
 
 
 def build_inference_scheduler(sampler: str, train_scheduler_config) -> Any:
+    """Builds an inference scheduler from the training configuration."""
     if sampler == "ddim":
         return DDIMScheduler.from_config(train_scheduler_config)
     elif sampler == "dpm":
@@ -77,5 +69,7 @@ def build_inference_scheduler(sampler: str, train_scheduler_config) -> Any:
         return UniPCMultistepScheduler.from_config(train_scheduler_config)
     raise ValueError(f"Unknown sampler: {sampler}")
 
+
 def load_unet_from_pretrained(path: str) -> UNet2DModel:
+    """Loads a pretrained UNet from disk."""
     return UNet2DModel.from_pretrained(path)

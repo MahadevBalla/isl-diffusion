@@ -1,29 +1,8 @@
 """
-Training loop.
+Training utilities for diffusion models.
 
-Key design choices, each addressing a specific issue from the previous paper:
-
-- Step-based training budget (max_train_steps), not epoch-based early stopping.
-  Since every experiment now uses the full 1200/class dataset, one epoch is the
-  same number of steps everywhere, so a fixed step budget is directly
-  comparable across runs with no epoch-vs-gradient-step confound.
-
-- EMA is tracked unconditionally during training. Both raw and EMA weights are
-  saved at every checkpoint, so an "EMA on vs off" comparison at evaluation
-  time costs zero additional GPU-hours -- it's two inference passes off the
-  same checkpoint, not two training runs.
-
-- CFG label dropout: for conditional runs, each training label is replaced
-  with the reserved NULL class (cfg.null_class_idx) with probability
-  cfg.cfg_dropout_prob, so the model also learns the unconditional score
-  needed at inference time for classifier-free guidance.
-
-- Checkpointing is resumable: every checkpoint_every_steps, model, EMA,
-  optimizer, lr_scheduler and step count are all saved together under
-  <output_dir>/checkpoints/step_<N>/. If resume_from_checkpoint is True and a
-  checkpoint exists, training picks up exactly where it left off -- this is
-  what makes SLURM `--dependency=afterok` chaining safe (a job that gets
-  killed by a walltime limit can be resubmitted and will resume, not restart).
+Supports checkpointing, automatic resume, EMA tracking, sample generation,
+and export to the diffusers format.
 """
 
 from __future__ import annotations
@@ -31,13 +10,12 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
-from diffusers import UNet2DModel
+from diffusers import DDPMPipeline, UNet2DModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.training_utils import EMAModel
 from torch.optim import AdamW
@@ -58,7 +36,8 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def _find_latest_checkpoint(cfg: ExperimentConfig) -> Optional[Path]:
+def _find_latest_checkpoint(cfg: ExperimentConfig) -> Path | None:
+    """Returns the most recent checkpoint, if available."""
     ckpt_root = Path(cfg.checkpoint_dir)
     if not ckpt_root.exists():
         return None
@@ -70,10 +49,12 @@ def _find_latest_checkpoint(cfg: ExperimentConfig) -> Optional[Path]:
 
 
 def train(cfg: ExperimentConfig) -> dict:
+    """Trains a diffusion model."""
     set_seed(cfg.seed)
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "config.json").write_text(
+    # Save the experiment configuration for reproducibility.
+    (out_dir / "isl_experiment_config.json").write_text(
         json.dumps(cfg.__dict__, indent=2, default=str)
     )
 
@@ -87,7 +68,6 @@ def train(cfg: ExperimentConfig) -> dict:
         drop_last=True,
         persistent_workers=cfg.num_workers > 0,
     )
-    steps_per_epoch = len(dataloader)
 
     model = build_model(cfg)
     train_scheduler = build_train_scheduler(cfg)
@@ -102,9 +82,7 @@ def train(cfg: ExperimentConfig) -> dict:
         accelerator.init_trackers(cfg.name)
 
     optimizer = AdamW(
-        model.parameters(),
-        lr=cfg.learning_rate,
-        weight_decay=cfg.weight_decay,
+        model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
     )
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer=optimizer,
@@ -141,7 +119,8 @@ def train(cfg: ExperimentConfig) -> dict:
 
     accelerator.print(
         f"[{cfg.name}] starting at step {global_step}/{cfg.max_train_steps} "
-        f"({steps_per_epoch} steps/epoch, conditional={cfg.conditional})"
+        f"({cfg.steps_per_epoch} steps/epoch, ~{cfg.approx_epochs:.1f} epochs total, "
+        f"conditional={cfg.conditional})"
     )
 
     t0 = time.time()
@@ -216,7 +195,9 @@ def train(cfg: ExperimentConfig) -> dict:
             global_step % cfg.sample_every_steps == 0
             or global_step == cfg.max_train_steps
         ):
-            _save_sample_grid(cfg, accelerator, model, ema, train_scheduler, global_step)
+            _save_sample_grid(
+                cfg, accelerator, model, ema, train_scheduler, global_step
+            )
 
         if accelerator.is_main_process and (
             global_step % cfg.checkpoint_every_steps == 0
@@ -226,8 +207,9 @@ def train(cfg: ExperimentConfig) -> dict:
 
     accelerator.end_training()
     if accelerator.is_main_process:
-        _export_final_model(cfg, accelerator, model, ema, train_scheduler)
-    np.save(out_dir / "loss_history.npy", np.array(loss_history))
+        export_final_model(cfg, accelerator.unwrap_model(model), ema, train_scheduler)
+        np.save(out_dir / "loss_history.npy", np.array(loss_history))
+
     return {
         "name": cfg.name,
         "output_dir": str(out_dir),
@@ -238,6 +220,7 @@ def train(cfg: ExperimentConfig) -> dict:
 
 
 def _save_checkpoint(cfg, accelerator, ema, global_step, loss_history) -> None:
+    """Saves the current training state."""
     ckpt_dir = Path(cfg.checkpoint_dir) / f"step_{global_step:07d}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     accelerator.save_state(str(ckpt_dir))
@@ -251,6 +234,7 @@ def _save_checkpoint(cfg, accelerator, ema, global_step, loss_history) -> None:
 def _save_sample_grid(
     cfg, accelerator, model, ema, train_scheduler, global_step
 ) -> None:
+    """Generates and saves a grid of sample images."""
     unwrapped = accelerator.unwrap_model(model)
     ema.store(unwrapped.parameters())
     ema.copy_to(unwrapped.parameters())
@@ -280,37 +264,26 @@ def _save_sample_grid(
     ema.restore(unwrapped.parameters())
     unwrapped.train()
 
-def _export_final_model(
-    cfg: ExperimentConfig, accelerator, model, ema, train_scheduler
+
+def export_final_model(
+    cfg: ExperimentConfig, unwrapped_model, ema, train_scheduler
 ) -> None:
     """
-    Plain diffusers-native export: unet/ + scheduler/ via save_pretrained().
-    No custom pipeline class -- sampling.py remains the one place that knows
-    how to run CFG inference, and it can load the exported unet with
-    UNet2DModel.from_pretrained(<final_model>/unet) just as easily as it
-    currently loads a raw state dict. This just makes the weights portable
-    and Hub-compatible without adding a second thing to maintain.
-    """
-    from diffusers import DDIMScheduler
+    Exports EMA and raw model weights in the diffusers format.
 
-    unwrapped = accelerator.unwrap_model(model)
-    inference_scheduler = DDIMScheduler.from_config(train_scheduler.config)
+    The training scheduler configuration is exported alongside the model so the
+    checkpoint can be reloaded with `DiffusionPipeline.from_pretrained()`.
+    """
+    out_root = Path(cfg.output_dir)
 
     def _export(tag: str):
-        out_dir = Path(cfg.output_dir) / tag
-        unwrapped.save_pretrained(str(out_dir / "unet"))
-        inference_scheduler.save_pretrained(str(out_dir / "scheduler"))
-        (out_dir / "experiment_config.json").write_text(
-            json.dumps(cfg.__dict__, indent=2, default=str)
-        )
+        pipeline = DDPMPipeline(unet=unwrapped_model, scheduler=train_scheduler)
+        pipeline.save_pretrained(str(out_root / tag))
 
-    # EMA weights: the canonical export you'd use for inference / push to Hub
-    ema.store(unwrapped.parameters())
-    ema.copy_to(unwrapped.parameters())
+    ema.store(unwrapped_model.parameters())
+    ema.copy_to(unwrapped_model.parameters())
     _export("final_model")
-    ema.restore(unwrapped.parameters())
+    ema.restore(unwrapped_model.parameters())
 
-    # raw weights too, since you evaluate both anyway
     _export("final_model_raw")
-
-    accelerator.print(f"[{cfg.name}] exported final_model/ and final_model_raw/")
+    print(f"[{cfg.name}] exported final_model and final_model_raw")

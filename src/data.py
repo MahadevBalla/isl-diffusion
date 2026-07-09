@@ -1,28 +1,19 @@
 """
-Dataset handling for the local, already-downloaded ISL image folder.
+Dataset utilities for the ISL image dataset.
 
-Expects `data_root` to contain one subdirectory per class:
-    data_root/
-        1/*.jpg
-        2/*.jpg
-        ...
-        A/*.jpg
-        ...
-        Z/*.jpg
-
-Deterministically samples exactly `samples_per_class` images per class (seeded),
-so every experiment trains on the identical set of images regardless of which
-config is running -- this is what makes the ablations comparable.
+Images are loaded from one directory per class. Preprocessing preserves
+aspect ratio before center cropping to the target resolution. Training
+optionally applies affine and color augmentation.
 """
 
 from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import List, Tuple
 
 import torch
 import torchvision.transforms as T
+import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -35,7 +26,7 @@ def normalize_to_minus_one_one(x: torch.Tensor) -> torch.Tensor:
     return x * 2 - 1
 
 
-def list_classes(data_root: str) -> List[str]:
+def list_classes(data_root: str) -> list[str]:
     root = Path(data_root)
     classes = sorted(d.name for d in root.iterdir() if d.is_dir())
     if not classes:
@@ -43,11 +34,21 @@ def list_classes(data_root: str) -> List[str]:
     return classes
 
 
-def _augmentation_transforms() -> List:
+def resize_aspect_preserving(
+    img: Image.Image,
+    target_size: int,
+    margin_factor: float = 1.15,
+) -> Image.Image:
+    """Resizes the shorter side while preserving aspect ratio."""
+    short_side = max(target_size, int(round(target_size * margin_factor)))
+    return TF.resize(img, short_side, antialias=True)
+
+
+def _augmentation_transforms() -> list:
     """
-    Rotation +-10deg, translation 5%, scale 0.95-1.05, brightness/contrast jitter.
-    Deliberately NO horizontal flip: ISL handshapes are not left/right symmetric
-    and flipping can silently change or invalidate the class label.
+    Returns the training augmentation pipeline.
+
+    Horizontal flips are omitted because they may change the sign label.
     """
     return [
         T.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
@@ -55,7 +56,26 @@ def _augmentation_transforms() -> List:
     ]
 
 
+def build_transform(cfg: ExperimentConfig, train: bool) -> T.Compose:
+    """Builds the preprocessing pipeline."""
+    use_aug = train and cfg.use_augmentation
+    transforms: list = [
+        T.Lambda(
+            lambda img: resize_aspect_preserving(
+                img, cfg.image_size, cfg.resize_margin_factor if use_aug else 1.0
+            )
+        ),
+        T.CenterCrop(cfg.image_size),
+    ]
+    if use_aug:
+        transforms.extend(_augmentation_transforms())
+    transforms += [T.ToTensor(), T.Lambda(normalize_to_minus_one_one)]
+    return T.Compose(transforms)
+
+
 class ISLDataset(Dataset):
+    """ISL image dataset."""
+
     def __init__(self, cfg: ExperimentConfig, train: bool = True):
         self.cfg = cfg
         self.mode = "L" if cfg.grayscale else "RGB"
@@ -64,10 +84,11 @@ class ISLDataset(Dataset):
             f"Expected {cfg.num_classes} classes, found {len(classes)}: {classes}"
         )
         self.class_to_idx = {c: i for i, c in enumerate(classes)}
+        self.idx_to_class_map = {v: k for k, v in self.class_to_idx.items()}
 
         rng = random.Random(cfg.seed)
-        self.paths: List[Path] = []
-        self.labels: List[int] = []
+        self.paths: list[Path] = []
+        self.labels: list[int] = []
         for cls in classes:
             cls_dir = Path(cfg.data_root) / cls
             imgs = sorted(
@@ -78,25 +99,18 @@ class ISLDataset(Dataset):
                     f"Class '{cls}' has only {len(imgs)} images, "
                     f"need {cfg.samples_per_class}"
                 )
-            # deterministic seeding required for reproducibility, not security-sensitive
             selected = rng.sample(imgs, cfg.samples_per_class)  # NOSONAR
             self.paths.extend(selected)
             self.labels.extend([self.class_to_idx[cls]] * len(selected))
 
-        aug = _augmentation_transforms() if (train and cfg.use_augmentation) else []
-        self.transform = T.Compose(
-            [T.Resize((cfg.image_size, cfg.image_size))]
-            + aug
-            + [T.ToTensor(), T.Lambda(normalize_to_minus_one_one)]  # normalize to [-1, 1]
-        )
+        self.transform = build_transform(cfg, train=train)
 
     def __len__(self) -> int:
         return len(self.paths)
 
-    def __getitem__(self, idx: int) -> Tuple:
+    def __getitem__(self, idx: int) -> tuple:
         img = Image.open(self.paths[idx]).convert(self.mode)
         return self.transform(img), self.labels[idx]
 
     def idx_to_class(self, idx: int) -> str:
-        inv = {v: k for k, v in self.class_to_idx.items()}
-        return inv[idx]
+        return self.idx_to_class_map[idx]
