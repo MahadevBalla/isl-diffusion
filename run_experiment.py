@@ -13,6 +13,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 from pathlib import Path
 
 import torch
@@ -25,6 +26,9 @@ from src import evaluate as ev
 from src.config import EXPERIMENTS, ExperimentConfig
 from src.engine import _find_latest_checkpoint, export_final_model, train
 from src.model import build_model, build_train_scheduler, load_unet_from_pretrained
+
+if mp.get_start_method(allow_none=True) is None:
+    mp.set_start_method("fork", force=False)
 
 
 def _load_models_from_checkpoint(

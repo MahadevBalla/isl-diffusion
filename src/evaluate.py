@@ -208,7 +208,7 @@ def _kernel_distance(
 
 def _extract_features(folder: Path, device, feat_model) -> np.ndarray:
     return get_folder_features(
-        str(folder), model=feat_model, mode="clean", device=device
+        str(folder), model=feat_model, mode="clean", device=device, num_workers=0
     )
 
 
@@ -437,8 +437,8 @@ def train_semantic_classifier(cfg: ExperimentConfig, device, epochs: int = 8) ->
         [len(full_ds) - n_val, n_val],
         generator=torch.Generator().manual_seed(cfg.seed),
     )
-    train_loader = DataLoader(train_ds, batch_size=128, shuffle=True, num_workers=8)
-    val_loader = DataLoader(val_ds, batch_size=128, shuffle=False, num_workers=8)
+    train_loader = DataLoader(train_ds, batch_size=128, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=128, shuffle=False, num_workers=0)
 
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model.fc = torch.nn.Linear(model.fc.in_features, cfg.num_classes)
