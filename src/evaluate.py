@@ -22,10 +22,8 @@ import lpips
 import numpy as np
 import torch
 import torch.nn.functional as F
-from cleanfid.features import build_feature_extractor
-from cleanfid.fid import get_folder_features
+import torch_fidelity
 from PIL import Image
-from prdc import compute_prdc
 from torch.utils.data import DataLoader, random_split
 from torchvision import models
 from torchvision import transforms as TV
@@ -49,8 +47,6 @@ REAL_CACHE_ROOT = Path("./experiments/_real_fid_cache")
 _TORCH_HUB_CACHE_DIR = REAL_CACHE_ROOT / "_torch_hub_cache"
 os.environ.setdefault("TORCH_HOME", str(_TORCH_HUB_CACHE_DIR))
 
-_INCEPTION_FILENAME = "inception-2015-12-05.pt"
-_PERSISTENT_INCEPTION_PATH = REAL_CACHE_ROOT / _INCEPTION_FILENAME
 _LPIPS_MODEL_CACHE: dict[str, lpips.LPIPS] = {}
 
 
@@ -60,20 +56,6 @@ def _update_results(cfg: ExperimentConfig, key: str, value) -> None:
     data = json.loads(out.read_text()) if out.exists() else {}
     data[key] = value
     out.write_text(json.dumps(data, indent=2, default=str))
-
-
-def ensure_inception_weights() -> None:
-    tmp_path = Path("/tmp") / _INCEPTION_FILENAME
-    if tmp_path.exists():
-        return
-    if _PERSISTENT_INCEPTION_PATH.exists():
-        shutil.copy2(_PERSISTENT_INCEPTION_PATH, tmp_path)
-        return
-    from cleanfid.downloads_helper import check_download_inception
-
-    check_download_inception(fpath="/tmp")
-    REAL_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(tmp_path, _PERSISTENT_INCEPTION_PATH)
 
 
 def ensure_lpips_weights() -> None:
@@ -90,8 +72,6 @@ def ensure_resnet_weights() -> None:
 
 def warm_all_caches() -> None:
     """Downloads all pretrained evaluation models into the local cache."""
-    print("Downloading Inception weights (clean-fid)...")
-    ensure_inception_weights()
     print("Downloading AlexNet weights (LPIPS)...")
     ensure_lpips_weights()
     print("Downloading ResNet18 weights (semantic classifier)...")
@@ -164,79 +144,28 @@ def _generate_fake_dir(
 
 
 # Image quality metrics
-def _frechet_distance(mu1, sigma1, mu2, sigma2, eps: float = 1e-6) -> float:
-    """Computes the Fréchet distance between two Gaussian distributions."""
-    from scipy import linalg
-
-    mu1, mu2 = np.atleast_1d(mu1), np.atleast_1d(mu2)
-    sigma1, sigma2 = np.atleast_2d(sigma1), np.atleast_2d(sigma2)
-    diff = mu1 - mu2
-
-    covmean = linalg.sqrtm(sigma1.dot(sigma2))
-    if not np.isfinite(covmean).all():
-        offset = np.eye(sigma1.shape[0]) * eps
-        covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
-    if np.iscomplexobj(covmean):
-        if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
-            raise ValueError(f"Imaginary component {np.max(np.abs(covmean.imag))}")
-        covmean = covmean.real
-
-    return float(
-        diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean)
-    )
-
-
-def _kernel_distance(
-    feats1: np.ndarray,
-    feats2: np.ndarray,
-    num_subsets: int = 100,
-    max_subset_size: int = 1000,
-) -> float:
-    """Computes the polynomial-kernel MMD estimator used for KID."""
-    n = feats1.shape[1]
-    m = min(min(feats1.shape[0], feats2.shape[0]), max_subset_size)
-    t = 0.0
-    rng = np.random.default_rng(42)
-    for _ in range(num_subsets):
-        x = feats2[rng.choice(feats2.shape[0], m, replace=False)]
-        y = feats1[rng.choice(feats1.shape[0], m, replace=False)]
-        a = (x @ x.T / n + 1) ** 3 + (y @ y.T / n + 1) ** 3
-        b = (x @ y.T / n + 1) ** 3
-        t += (a.sum() - np.diag(a).sum()) / (m - 1) - b.sum() * 2 / m
-    return float(t / num_subsets / m)
-
-
-def _extract_features(folder: Path, device, feat_model) -> np.ndarray:
-    return get_folder_features(
-        str(folder), model=feat_model, mode="clean", device=device, num_workers=0
-    )
-
-
 def fid_kid_precision_recall(
     real_dir: Path, fake_dir: Path, device, nearest_k: int = 5
 ) -> dict[str, float]:
-    """
-    Computes FID, KID, Precision, Recall, Density, and Coverage from a
-    shared set of Inception features.
-    """
-    ensure_inception_weights()
-    feat_model = build_feature_extractor(mode="clean", device=device)
-
-    real_feats = _extract_features(real_dir, device, feat_model)
-    fake_feats = _extract_features(fake_dir, device, feat_model)
-
-    mu1, sigma1 = np.mean(real_feats, axis=0), np.cov(real_feats, rowvar=False)
-    mu2, sigma2 = np.mean(fake_feats, axis=0), np.cov(fake_feats, rowvar=False)
-
-    metrics = {
-        "fid": _frechet_distance(mu1, sigma1, mu2, sigma2),
-        "kid": _kernel_distance(real_feats, fake_feats),
-    }
-    prdc_metrics = compute_prdc(
-        real_features=real_feats, fake_features=fake_feats, nearest_k=nearest_k
+    """Computes FID, KID, Precision, and Recall via torch_fidelity."""
+    n_fake = len(list(Path(fake_dir).glob("*.png")))
+    metrics = torch_fidelity.calculate_metrics(
+        input1=str(fake_dir),
+        input2=str(real_dir),
+        cuda=torch.cuda.is_available(),
+        fid=True,
+        kid=True,
+        prc=True,
+        prc_neighborhood=nearest_k,
+        kid_subset_size=min(1000, n_fake),
+        verbose=False,
     )
-    metrics.update({k: float(v) for k, v in prdc_metrics.items()})
-    return metrics
+    return {
+        "fid": metrics["frechet_inception_distance"],
+        "kid": metrics["kernel_inception_distance_mean"],
+        "precision": metrics["precision"],
+        "recall": metrics["recall"],
+    }
 
 
 def _get_lpips_model(device) -> lpips.LPIPS:

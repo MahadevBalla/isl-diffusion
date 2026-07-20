@@ -29,7 +29,7 @@ Run once on a machine with internet access:
 uv run run_experiment.py warm-caches
 ```
 
-This downloads and caches the pretrained weights required for evaluation (InceptionV3, AlexNet, and ResNet18).
+This downloads and caches the pretrained weights required for evaluation (AlexNet for LPIPS and ResNet18 for semantic classification). `torch-fidelity` automatically manages the InceptionV3 weights used for FID, KID, and Precision/Recall.
 
 ## Running
 
@@ -82,6 +82,6 @@ Evaluation includes:
 
 - FID
 - KID
-- Precision / Recall / Density / Coverage
+- Precision / Recall
 - Semantic Accuracy
 - LPIPS Diversity
