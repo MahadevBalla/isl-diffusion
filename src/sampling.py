@@ -21,6 +21,26 @@ def _to_pil(tensor: torch.Tensor) -> Image.Image:
     return Image.fromarray(img, mode="RGB")
 
 
+def _rescale_cfg(
+    noise_cfg: torch.Tensor,
+    noise_cond: torch.Tensor,
+    guidance_rescale: float,
+) -> torch.Tensor:
+    """
+    Rescales the classifier-free guidance prediction to reduce
+    over-saturation at high guidance scales.
+
+    Implements the guidance rescaling method proposed by
+    Lin et al. (2023). A value of 0.0 disables rescaling,
+    while 1.0 applies the full correction.
+    """
+    dims = list(range(1, noise_cfg.ndim))
+    std_cond = noise_cond.std(dim=dims, keepdim=True)
+    std_cfg = noise_cfg.std(dim=dims, keepdim=True)
+    noise_pred_rescaled = noise_cfg * (std_cond / std_cfg.clamp_min(1e-8))
+    return guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
+
+
 @torch.no_grad()
 def sample_images(
     model,
@@ -30,13 +50,21 @@ def sample_images(
     device,
     class_labels: torch.Tensor | None = None,
     guidance_scale: float = 1.0,
+    guidance_rescale: float = 0.7,
     sampler: str | None = None,
     num_inference_steps: int | None = None,
     seed: int = 42,
     return_intermediates: bool = False,
     intermediate_every: int = 10,
 ) -> list[Image.Image] | tuple[list[Image.Image], list]:
-    """Generates images using the configured inference scheduler."""
+    """
+    Generates images by iteratively denoising Gaussian noise using
+    the configured inference scheduler.
+
+    Supports conditional sampling, classifier-free guidance (CFG),
+    optional CFG rescaling, deterministic seeding, and intermediate
+    denoising snapshots for visualization.
+    """
     sampler = sampler or cfg.sampler
     num_inference_steps = num_inference_steps or cfg.num_inference_steps
     scheduler = build_inference_scheduler(sampler, train_scheduler_config)
@@ -71,6 +99,8 @@ def sample_images(
                     model_input, t, class_labels=null_labels, return_dict=False
                 )[0]
                 noise_pred = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
+                if guidance_rescale > 0.0:
+                    noise_pred = _rescale_cfg(noise_pred, eps_cond, guidance_rescale)
             else:
                 noise_pred = model(
                     model_input, t, class_labels=class_labels, return_dict=False
